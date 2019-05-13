@@ -13,8 +13,11 @@ REPONAME=
 if [ ${#BUILD_BUILDID} -gt 0 ]; then
 BUILDID=${BUILD_BUILDID}
 fi
-if [ ${#BUILD_SOURCEBRANCHNAME} -gt 0 ]; then
-BRANCH=$BUILD_SOURCEBRANCHNAME
+if [ ${#BUILD_SOURCEBRANCH} -gt 0 ]; then
+# clean the name
+BRANCHSOURCE=$BUILD_SOURCEBRANCH
+BRANCHSOURCE=($(echo $BRANCHSOURCE | sed 's/refs\/heads\// /g'))
+BRANCH=$BRANCHSOURCE
 fi
 if [ ${#BUILD_REPOSITORY_LOCALPATH} -gt 0 ]; then
 PATHTOREPO=$BUILD_REPOSITORY_LOCALPATH
@@ -62,6 +65,10 @@ fi
 # go to our working location
 cd $PATHTOREPO
 
+# make sure we're on the right branch
+git checkout $BRANCH
+git pull
+
 # get all the tags and sort them
 TAGS=($(git tag))
 IFS=$'\n' SORTEDTAGS=($(sort <<<"${TAGS[*]}"))
@@ -77,47 +84,44 @@ do
    [[ $element =~ $SEMVERREGEXP ]] && SEMVERTAGS+=("$element")
 done
 
-# define a function for string position finding
-strindex() { 
-  x="${1%%$2*}"
-  [[ "$x" = "$1" ]] && echo -1 || echo "${#x}"
-}
-
 # get the biggest tag
 BIGTAG=
-ISALPHA="0"
-ISBETA="0"
-ISRC="0"
-ISPROD="0"
+ISALPHA="N"
+ISBETA="N"
+ISRC="N"
+ISPROD="N"
 LASTPRODTAG=
 NOALPHAREGEX="^[0-9]+([.][0-9]+)([.][0-9]+)$"
 for element in "${SEMVERTAGS[@]}"
 do
-    echo "${element}"
+   # write out the tag we found to the console
+   echo "${element}"
+   # if this tag has no build quality it must be a prod tag
    [[ $element =~ $NOALPHAREGEX ]] && LASTPRODTAG="$element"
+   # segment the tag into semver components by dot
    b=( ${element//./ } )
 
    # reset our latest tag build quality labels
-   ISALPHA="0"
-   ISBETA="0"
-   ISRC="0"
+   ISALPHA="N"
+   ISBETA="N"
+   ISRC="N"
 
    # parse out the last element in case there are build quality strings
    LASTELEM=${b[2]}
 
    # find out if this a non production build quality
-   ISPROD="1"
+   ISPROD="Y"
    if [[ $LASTELEM == *"alpha"* ]]; then
-       ISALPHA="1"
-       ISPROD="0"
+       ISALPHA="Y"
+       ISPROD="N"
    fi
    if [[ $LASTELEM == *"beta"* ]]; then
-       ISBETA="1"
-       ISPROD="0"
+       ISBETA="Y"
+       ISPROD="N"
    fi
    if [[ $LASTELEM == *"rc"* ]]; then
-       ISRC="1"
-       ISPROD="0"
+       ISRC="Y"
+       ISPROD="N"
    fi
 
    if [[ $LASTELEM == *"-"* ]]; then
@@ -175,8 +179,7 @@ do
 done
 
 if [ ${#INCREMENTTYPE} -eq 0 ]; then
-    echo "Could not identify semver type from commit message"
-    exit 1
+    echo "Could not identify semver type from commit message. Using original number."
 fi
 
 # debug
@@ -185,12 +188,11 @@ echo "ISBETA is $ISBETA"
 echo "ISRC is $ISRC"
 echo "ISALPHA is $ISALPHA"
 echo "ISPROD is $ISPROD"
-echo "Semver branch is"
 echo "BRANCH is $BRANCH"
 
 # major
 if [ "$INCREMENTTYPE" == "1" ]; then
-    if [[ ( ISBETA="1" && "$BRANCH" == "develop" ) || ( ISRC="1" && "$BRANCH" == *"release"* ) || ( ISPROD="1" && "$BRANCH" == "master" ) || ( ISALPHA="1" ) ]]; then
+    if [[ ( $ISBETA == "Y" && "$BRANCH" == "develop" ) || ( $ISRC == "Y" && "$BRANCH" == *"release"* ) || ( $ISPROD == "Y" && "$BRANCH" == "master" ) || ( $ISALPHA == "Y" ) ]]; then
         echo "incrementing build but not semver"
     else
         ((a[0]++))
@@ -201,7 +203,7 @@ fi
 
 # minor
 if [ "$INCREMENTTYPE" == "2" ]; then
-    if [[ ( ISBETA="1" && "$BRANCH" == "develop" ) || ( ISRC="1" && "$BRANCH" == *"release"* ) || ( ISPROD="1" && "$BRANCH" == "master" ) || ( ISALPHA="1" ) ]]; then
+    if [[ ( $ISBETA == "Y" && "$BRANCH" == "develop" ) || ( $ISRC == "Y" && "$BRANCH" == *"release"* ) || ( $ISPROD == "Y" && "$BRANCH" == "master" ) || ( $ISALPHA == "Y" ) ]]; then
         echo "incrementing build but not semver"
     else
         ((a[1]++))
@@ -211,12 +213,15 @@ fi
 
 # patch
 if [ "$INCREMENTTYPE" == "3" ]; then
-    if [[ ( ISBETA="1" && "$BRANCH" == "develop" ) || ( ISRC="1" && "$BRANCH" == *"release"* ) || ( ISPROD="1" && "$BRANCH" == "master" ) || ( ISALPHA="1" ) ]]; then
+    if [[ ( $ISBETA == "Y" && "$BRANCH" == "develop" ) || ( $ISRC == "Y" && "$BRANCH" == *"release"* ) || ( $ISPROD == "Y" && "$BRANCH" == "master" ) || ( $ISALPHA == "Y" ) ]]; then
         echo "incrementing build but not semver"
     else
         ((a[2]++))
     fi
 fi
+
+# pad left the build id
+BUILDID=( $(printf '%05d' "$BUILDID") )
 
 # reassemble the new tag
 NEWTAG="${a[0]}.${a[1]}.${a[2]}"
@@ -229,12 +234,12 @@ if [ "$BRANCH" == "develop" ]; then
     SEMVER="$NEWTAG-beta-$BUILDID"
 fi
 
-if [ "$BRANCH" == *"release"* ]; then
+if [[ "$BRANCH" == *"release"* ]]; then
     SEMVER="$NEWTAG-rc-$BUILDID"
 fi
 
 if [ "$BRANCH" == "master" ]; then
-    FINSEMVERALTAG="$NEWTAG"
+    SEMVER="$NEWTAG"
 fi
 
 export SEMVER
